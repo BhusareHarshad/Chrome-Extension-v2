@@ -6,6 +6,11 @@ from pydantic import BaseModel
 from prompts.prompt import main_prompt
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_community.document_loaders import BSHTMLLoader
+from db_utils import db
+from bs4 import BeautifulSoup
+import logging
+
+logging.basicConfig(filename='Logs/app.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 app = FastAPI()
 app.add_middleware(
@@ -15,10 +20,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
-
-class input(BaseModel):
-    text: str 
-    
+  
 class SummaryRequest(BaseModel):
     htmldata: str
 
@@ -30,9 +32,9 @@ def homepage():
     return {"Sucess"}
 
 @app.post('/summarize')
-def summarize(htmldata: SummaryRequest):
-    #TODO: LLama3 support 
-    print(htmldata.htmldata)
+async def summarize(htmldata: SummaryRequest):
+    #TODO: LLama3 support
+    
     #Configuration
     config_file_path = r"config\models.yaml"
     config = utils.read_yaml(config_file_path)
@@ -41,23 +43,43 @@ def summarize(htmldata: SummaryRequest):
             model = model_config['model']
             key = model_config['key']
             
-    with open("ref.html", "w", encoding='utf-8', errors="replace") as f:
-        f.write(htmldata.htmldata)
+    #TODO: Put it in different python file and class
+    file_path = r"./data/ref2.html"
+    def write_html_data(data):
+        with open(file_path, "w", encoding="utf-8", errors="replace") as f:
+            f.write(data)
+            
+    def read_html():
+        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            html = f.read()    
+        return html 
+  
+    def extract_html_data():
         
-    with open("ref.txt", 'w', encoding='utf-8', errors="replace") as ff:
-        ff.write(htmldata.htmldata)
+        html = read_html()
+        soup = BeautifulSoup(html)
 
+        # kill all script and style elements
+        for script in soup(["script", "style"]):
+            script.extract()
 
-    #print(f"Question from human: {question}")
-    question = "The office of shogun was in practice hereditary, although over the course of the history of Japan several different clans held the position. The title was originally held by military commanders during the Heian period in the eighth and ninth centuries. When Minamoto no Yoritomo gained political ascendency over Japan in 1185, the title was revived to regularize his position, making him the first shogun in the usually understood sense."
-    loader = BSHTMLLoader('ref.html')
-    data = loader.load()
+        text = soup.get_text()
+        lines = (line.strip() for line in text.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        text = '\n'.join(chunk for chunk in chunks if chunk)
+        print(text)
+        if len(text) < 3000:
+            return text
+        else:
+            #TODO: Write a proper chuncking logic and add a vector database
+            return text[:3000]
     
-    for dat in data:
-        question = dat.page_content
+    write_html_data(htmldata.htmldata)
+    question = extract_html_data()
+    print(f"Question: {question}")
     
+    #prompt Template and llm calls
     template = main_prompt.format(text="text")
-    print(template)
     prompt = PromptTemplate.from_template(template)
     print('Reached control')
 
@@ -67,7 +89,10 @@ def summarize(htmldata: SummaryRequest):
     try:
         res = llm_chain.invoke(question)
         print(res)
+        #TODO: Feedback functionality at frontend
+        await db.insert_data(htmldata.htmldata, res, "positive")
     except Exception as e:
+        logging.error("Error while connecting to PostgreSQL: %s", e)
         print(e)
     
     return {"data": res}
