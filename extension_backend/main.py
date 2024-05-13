@@ -29,7 +29,7 @@ class SummaryRequest(BaseModel):
 
 @app.get('/')
 def homepage():
-    return {"Sucess"}
+    return {"Response": "Success"}
 
 @app.post('/summarize')
 async def summarize(htmldata: SummaryRequest):
@@ -37,6 +37,7 @@ async def summarize(htmldata: SummaryRequest):
     
     #Configuration
     config_file_path = r"config\models.yaml"
+    res =""
     config = utils.read_yaml(config_file_path)
     for model_config in config['models']:
         if model_config["name"] == "OpenAI":
@@ -76,23 +77,20 @@ async def summarize(htmldata: SummaryRequest):
     
     write_html_data(htmldata.htmldata)
     question = extract_html_data()
-    print(f"Question: {question}")
     
     #prompt Template and llm calls
     template = main_prompt.format(text="text")
     prompt = PromptTemplate.from_template(template)
     print('Reached control')
 
-    llm = OpenAI(model=model, openai_api_key=key)
-    llm_chain = prompt | llm
-    res =""
     try:
+        #TODO: llm calls put in another class file
+        llm = OpenAI(model=model, openai_api_key=key)
+        llm_chain = prompt | llm
         res = llm_chain.invoke(question)
-        print(res)
         #TODO: Feedback functionality at frontend
         await db.insert_data(htmldata.htmldata, res, "positive")
     except Exception as e:
-        logging.error("Error while connecting to PostgreSQL: %s", e)
-        print(e)
+        logging.error("Error while generating response: %s", e)
     
     return {"data": res}
