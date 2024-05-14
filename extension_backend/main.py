@@ -3,11 +3,12 @@ from utility import utils
 from langchain_core.prompts import PromptTemplate
 from langchain_openai import OpenAI
 from pydantic import BaseModel
-from prompts.prompt import main_prompt
+from prompts.prompt import main_prompt, qna, main_prompt2
 from fastapi.middleware.cors import CORSMiddleware
-from langchain_community.document_loaders import BSHTMLLoader
-from db_utils import db
-from bs4 import BeautifulSoup
+from db_utils.db import (
+    insert_data
+)
+from data.data_processing import data_preprocessor
 import logging
 
 logging.basicConfig(filename='Logs/app.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -23,6 +24,10 @@ app.add_middleware(
   
 class SummaryRequest(BaseModel):
     htmldata: str
+    
+class Question(BaseModel):
+    htmldata: str
+    question: str
 
 #Put APIS logic else where
 #TODO: User Authentication and JWT
@@ -43,40 +48,10 @@ async def summarize(htmldata: SummaryRequest):
         if model_config["name"] == "OpenAI":
             model = model_config['model']
             key = model_config['key']
-            
-    #TODO: Put it in different python file and class
-    file_path = r"./data/ref2.html"
-    def write_html_data(data):
-        with open(file_path, "w", encoding="utf-8", errors="replace") as f:
-            f.write(data)
-            
-    def read_html():
-        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-            html = f.read()    
-        return html 
-  
-    def extract_html_data():
-        
-        html = read_html()
-        soup = BeautifulSoup(html)
-
-        # kill all script and style elements
-        for script in soup(["script", "style"]):
-            script.extract()
-
-        text = soup.get_text()
-        lines = (line.strip() for line in text.splitlines())
-        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-        text = '\n'.join(chunk for chunk in chunks if chunk)
-        print(text)
-        if len(text) < 3000:
-            return text
-        else:
-            #TODO: Write a proper chuncking logic and add a vector database
-            return text[:3000]
-    
-    write_html_data(htmldata.htmldata)
-    question = extract_html_data()
+               
+    data = data_preprocessor(htmldata.htmldata)
+    data.write_html_data()
+    question = data.extract_html_data()
     
     #prompt Template and llm calls
     template = main_prompt.format(text="text")
@@ -89,8 +64,48 @@ async def summarize(htmldata: SummaryRequest):
         llm_chain = prompt | llm
         res = llm_chain.invoke(question)
         #TODO: Feedback functionality at frontend
-        await db.insert_data(htmldata.htmldata, res, "positive")
+        await insert_data(htmldata.htmldata, res, "positive")
     except Exception as e:
+        logging.error("Error while generating response: %s", e)
+    
+    return {"data": res}
+
+
+@app.post('/question')
+async def qna(question: Question):
+    #TODO: LLama3 support
+
+    #Configuration
+    config_file_path = r"config\models.yaml"
+    res =""
+    config = utils.read_yaml(config_file_path)
+    for model_config in config['models']:
+        if model_config["name"] == "OpenAI":
+            model = model_config['model']
+            key = model_config['key']
+            
+    data = data_preprocessor(question.htmldata)
+    data.write_html_data()
+    html = data.extract_html_data()
+    
+    #prompt Template and llm calls
+    #template = qna.format(text="text", question="question")
+    #template = qna.format(text="text")
+    template = main_prompt2.format(text="text", res='res')
+    prompt = PromptTemplate.from_template(template)
+    print('Reached control')
+    ques = question.question
+    
+    try:
+        #TODO: llm calls put in another class file
+        #Create a common llm calls python file
+        llm = OpenAI(model=model, openai_api_key=key)
+        llm_chain = prompt | llm
+        res = llm_chain.invoke({"res": ques, "text": html})
+        #TODO: Feedback functionality at frontend
+        await insert_data(question.htmldata, res, "positive")
+    except Exception as e:
+        print(e)
         logging.error("Error while generating response: %s", e)
     
     return {"data": res}
